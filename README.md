@@ -33,7 +33,9 @@ const client = new CybsJwtClient({
   responseP12: { path: 'keys/response.p12', password: '••••' }, // only for response MLE
 });
 
-const res = await client.post('/pts/v2/payments', payload, { mle: 'none' });
+const res = await client.post('/pts/v2/payments', payload, {
+  mle: { request: false, response: false },
+});
 console.log(res.status, res.data);
 console.log(decodeJwt(res.jwt).payload); // inspect the claims you signed
 ```
@@ -83,17 +85,24 @@ The client picks the right identity automatically based on `useMetaKey`.
 ## Message-Level Encryption (MLE)
 
 MLE is configured **per call** because endpoints differ — some support request MLE only,
-some request + response, some none.
+some request + response, some none. It's always two explicit, independent booleans, and
+both default to `false`:
 
 ```js
-await client.post(path, body, { mle: 'none' });     // no encryption (default)
-await client.post(path, body, { mle: 'request' });  // encrypt request only
-await client.post(path, body, { mle: 'response' }); // decrypt response only
-await client.post(path, body, { mle: 'both' });     // both
-// or: { mle: { request: true, response: false } }
+await client.post(path, body);                                       // no MLE (both default false)
+await client.post(path, body, { mle: { request: true,  response: false } }); // encrypt request only
+await client.post(path, body, { mle: { request: false, response: true  } }); // decrypt response only
+await client.post(path, body, { mle: { request: true,  response: true  } }); // both
 ```
 
-You can set a client-wide default with `defaultMle`.
+A per-call spec can set just one side (`{ mle: { request: true } }`) — the other falls
+back to the configured default. You can set that client-wide default with `defaultMle`,
+which takes the same `{ request, response }` shape (useful as Cybersource makes MLE
+mandatory across more of the platform):
+
+```js
+new CybsJwtClient({ /* ... */, defaultMle: { request: true, response: true } });
+```
 
 ### Two p12 files, three keys
 
@@ -141,7 +150,7 @@ new CybsJwtClient({
     path, password,
     kid,                    // optional explicit kid override
   },
-  defaultMle,               // optional; 'none' | 'request' | 'response' | 'both'
+  defaultMle,               // optional; { request: boolean, response: boolean }, both default false
   clientId,                 // optional; sent as v-c-client-id / User-Agent
 });
 ```

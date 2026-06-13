@@ -9,6 +9,35 @@ const { encryptRequest, decryptResponse } = require('./mle');
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 /**
+ * Normalize an MLE spec to explicit `{ request, response }` booleans.
+ *
+ * MLE is always expressed as two independent booleans — `request` (encrypt the outgoing
+ * body) and `response` (decrypt the reply) — never a clever shorthand. Missing keys fall
+ * back to `base`, so a per-call spec can override just one side of the configured default.
+ *
+ * @param {object|undefined} spec - the supplied spec (may be partial)
+ * @param {{request: boolean, response: boolean}} base - defaults for unspecified keys
+ * @param {string} label - used in error messages
+ * @returns {{request: boolean, response: boolean}}
+ */
+function normalizeMle(spec, base, label) {
+  const out = { request: base.request, response: base.response };
+  if (spec === undefined || spec === null) return out;
+  if (typeof spec !== 'object' || Array.isArray(spec)) {
+    throw new Error(`${label} must be an object like { request: boolean, response: boolean }`);
+  }
+  for (const key of ['request', 'response']) {
+    if (key in spec) {
+      if (typeof spec[key] !== 'boolean') {
+        throw new Error(`${label}.${key} must be a boolean (got ${typeof spec[key]})`);
+      }
+      out[key] = spec[key];
+    }
+  }
+  return out;
+}
+
+/**
  * A small, transparent Cybersource REST client.
  *
  * Configure it once with your keys, then call get/post/put/patch/delete. Each call
@@ -24,7 +53,9 @@ const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
  *     requestP12:  { path: 'keys/request.p12',  password: '...' },
  *     responseP12: { path: 'keys/response.p12', password: '...' },
  *   });
- *   const res = await client.post('/pts/v2/payments', payload, { mle: 'both' });
+ *   const res = await client.post('/pts/v2/payments', payload, {
+ *     mle: { request: true, response: true },
+ *   });
  */
 class CybsJwtClient {
   constructor(config = {}) {
@@ -35,7 +66,7 @@ class CybsJwtClient {
       portfolioId,
       requestP12,
       responseP12,
-      defaultMle = 'none',
+      defaultMle = { request: false, response: false },
       clientId = 'cybs-jwt-client',
     } = config;
 
@@ -49,7 +80,8 @@ class CybsJwtClient {
     this.useMetaKey = useMetaKey;
     this.portfolioId = portfolioId;
     this.responseP12 = responseP12 || null;
-    this.defaultMle = defaultMle;
+    // The configured default is off on both sides; per-call options override per key.
+    this.defaultMle = normalizeMle(defaultMle, { request: false, response: false }, 'config.defaultMle');
     this.clientId = clientId;
 
     // For meta key, identity (issuer + cert alias) is the portfolio id; otherwise the MID.
@@ -65,18 +97,12 @@ class CybsJwtClient {
     this._responseKeys = null;
   }
 
-  /** Normalize an mle option ('none'|'request'|'response'|'both' or {request,response}) to booleans. */
-  _normalizeMle(spec) {
-    if (!spec || spec === 'none') return { request: false, response: false };
-    if (spec === 'request') return { request: true, response: false };
-    if (spec === 'response') return { request: false, response: true };
-    if (spec === 'both') return { request: true, response: true };
-    if (typeof spec === 'object') return { request: !!spec.request, response: !!spec.response };
-    throw new Error(`Invalid mle option: ${JSON.stringify(spec)} (use 'none'|'request'|'response'|'both' or {request,response})`);
-  }
-
+  /**
+   * Resolve the effective MLE for a call: start from the configured default, then apply
+   * whichever of `request` / `response` the call specified.
+   */
   _resolveMle(mle) {
-    return this._normalizeMle(mle === undefined ? this.defaultMle : mle);
+    return normalizeMle(mle, this.defaultMle, 'the mle option');
   }
 
   /** Lazily load + cache the response p12 keys. */

@@ -5,7 +5,7 @@
  *
  *   node examples/instrument-identifier.js
  *
- * Toggle MLE with CYBS_MLE in .env (none | request | response | both). Because the
+ * Toggle MLE with CYBS_MLE_REQUEST / CYBS_MLE_RESPONSE (true|false) in .env. Because the
  * payload carries a raw card number, this endpoint is a good one for exercising MLE.
  */
 
@@ -53,8 +53,8 @@ async function main() {
     },
   });
 
-  const mle = env.CYBS_MLE || 'none';
-  console.log(`\n→ POST ${REQUEST_PATH}  (mle: ${mle})\n`);
+  const mle = { request: bool(env.CYBS_MLE_REQUEST), response: bool(env.CYBS_MLE_RESPONSE) };
+  console.log(`\n→ POST ${REQUEST_PATH}  (mle request=${mle.request}, response=${mle.response})\n`);
 
   const res = await client.post(REQUEST_PATH, payload, { mle });
 

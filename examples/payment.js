@@ -9,7 +9,7 @@
  *
  * It builds a meta-key (or standard-key) client, POSTs a test payment to
  * /pts/v2/payments, then prints the signed JWT's decoded claims and the API response.
- * Toggle MLE with CYBS_MLE in .env (none | request | response | both).
+ * Toggle MLE with CYBS_MLE_REQUEST / CYBS_MLE_RESPONSE (true|false) in .env.
  */
 
 const fs = require('fs');
@@ -79,8 +79,8 @@ async function main() {
     },
   });
 
-  const mle = env.CYBS_MLE || 'none';
-  console.log(`\n→ POST /pts/v2/payments  (mle: ${mle})\n`);
+  const mle = { request: bool(env.CYBS_MLE_REQUEST), response: bool(env.CYBS_MLE_RESPONSE) };
+  console.log(`\n→ POST /pts/v2/payments  (mle request=${mle.request}, response=${mle.response})\n`);
 
   const res = await client.post('/pts/v2/payments', payload, { mle });
 

@@ -6,7 +6,7 @@
  *   node examples/tokenize.js
  *
  * This endpoint supports BOTH request and response MLE, so it's the one that actually
- * exercises live response decryption. Defaults to `both`; override with CYBS_MLE.
+ * exercises live response decryption. It runs with { request: true, response: true }.
  */
 
 const fs = require('fs');
@@ -96,8 +96,9 @@ async function main() {
     },
   });
 
-  const mle = env.CYBS_MLE || 'both';
-  console.log(`\n→ POST ${REQUEST_PATH}  (mle: ${mle})\n`);
+  // This endpoint supports both directions, so demonstrate the full encrypt + decrypt round-trip.
+  const mle = { request: true, response: true };
+  console.log(`\n→ POST ${REQUEST_PATH}  (mle request=${mle.request}, response=${mle.response})\n`);
 
   const res = await client.post(REQUEST_PATH, payload, { mle });
 
