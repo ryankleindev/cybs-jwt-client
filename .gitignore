@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Secrets & key material — NEVER commit these
+.env
+keys/
+*.p12
+*.pfx
+*.pem
+*.key
+*.p8
+
+# Logs
+log/
+*.log
+
+# OS
+.DS_Store
