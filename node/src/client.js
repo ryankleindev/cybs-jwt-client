@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { loadRequestP12, loadResponseP12 } = require('./keystore');
-const { buildJwt } = require('./jwt');
+const { buildJwt, decodeJwt } = require('./jwt');
 const { sha256Base64 } = require('./digest');
 const { encryptRequest, decryptResponse } = require('./mle');
 
@@ -120,90 +120,146 @@ class CybsJwtClient {
   }
 
   /**
-   * Core request flow. Returns { status, ok, headers, data, jwt, request }.
-   * `jwt` and `request` are returned so you can inspect/troubleshoot a failed call.
+   * Core request flow — returns a "glassbox" result: the answer plus a full `trace` of
+   * everything that happened under the hood.
+   *
+   * Returns `{ ok, status, data, trace }`, where `trace` is:
+   *   - `request`    — url, method, the headers actually sent, the resolved `mle` flags,
+   *                    your plaintext `body`, its serialized form (`bodySerialized`), the
+   *                    encrypted envelope (`bodyEncrypted`, when request MLE is on), and the
+   *                    exact bytes put on the wire (`bodyWire` — what the JWT `digest` hashes).
+   *   - `jwt`        — the signed compact token plus its decoded `header` and `claims`.
+   *   - `encryption` — the JWE protected headers for request/response MLE (null when off).
+   *   - `response`   — status, headers, the raw `{encryptedResponse}` (when response MLE),
+   *                    and the final decrypted/parsed `data`.
+   *
+   * The trace is always built and is intentionally lossless — it includes plaintext PANs,
+   * the bearer JWT, etc. This is a glassbox dev/troubleshooting tool, not a production
+   * client. If a crypto step throws, the partial trace is attached as `err.trace`.
    */
   async request(method, path, body, opts = {}) {
     method = method.toUpperCase();
     const mle = this._resolveMle(opts.mle);
     const hasBody = body !== undefined && body !== null;
 
-    // 1. Serialize the body and (if request MLE) encrypt it first — the digest must cover
-    //    the exact bytes we send, so encryption happens before digesting.
-    let bodyString;
-    if (hasBody) {
-      let outbound = body;
-      if (mle.request) {
-        outbound = await encryptRequest(JSON.stringify(body), {
-          cert: this.requestKeys.mleCert,
-          mleSerial: this.requestKeys.mleSerial,
-        });
+    // Build the trace incrementally so that, if a step throws (e.g. encrypt/decrypt), we can
+    // attach whatever we've learned so far to the error — see the catch at the end.
+    const trace = {
+      request: {
+        url: `https://${this.runEnvironment}${path}`,
+        method,
+        headers: null,
+        mle,
+        body: hasBody ? body : null,
+        bodySerialized: null,
+        bodyEncrypted: null,
+        bodyWire: null,
+      },
+      jwt: null,
+      encryption: { request: null, response: null },
+      response: null,
+    };
+
+    try {
+      // 1. Serialize the body and (if request MLE) encrypt it first — the digest must cover
+      //    the exact bytes we send, so encryption happens before digesting.
+      let bodyString;
+      if (hasBody) {
+        const plaintext = JSON.stringify(body);
+        trace.request.bodySerialized = plaintext;
+
+        let outbound = body;
+        if (mle.request) {
+          const { encryptedRequest, protectedHeader } = await encryptRequest(plaintext, {
+            cert: this.requestKeys.mleCert,
+            mleSerial: this.requestKeys.mleSerial,
+          });
+          outbound = { encryptedRequest };
+          trace.request.bodyEncrypted = outbound;
+          trace.encryption.request = protectedHeader;
+        }
+        bodyString = JSON.stringify(outbound);
+        trace.request.bodyWire = bodyString;
       }
-      bodyString = JSON.stringify(outbound);
-    }
 
-    // 2. Build the claim set.
-    const nowSec = Math.floor(Date.now() / 1000);
-    const claims = {
-      iat: nowSec,
-      exp: nowSec + 120, // tokens are short-lived: 2 minutes
-      'request-host': this.runEnvironment,
-      'request-resource-path': path,
-      'request-method': method.toLowerCase(),
-      iss: this.useMetaKey ? this.portfolioId : this.merchantId,
-      jti: crypto.randomUUID(),
-      'v-c-jwt-version': '2',
-    };
-    if (this.merchantId != null) claims['v-c-merchant-id'] = this.merchantId;
+      // 2. Build the claim set.
+      const nowSec = Math.floor(Date.now() / 1000);
+      const claims = {
+        iat: nowSec,
+        exp: nowSec + 120, // tokens are short-lived: 2 minutes
+        'request-host': this.runEnvironment,
+        'request-resource-path': path,
+        'request-method': method.toLowerCase(),
+        iss: this.useMetaKey ? this.portfolioId : this.merchantId,
+        jti: crypto.randomUUID(),
+        'v-c-jwt-version': '2',
+      };
+      if (this.merchantId != null) claims['v-c-merchant-id'] = this.merchantId;
 
-    // Body-bearing methods carry a digest of the (possibly encrypted) payload.
-    if (BODY_METHODS.has(method) && bodyString != null) {
-      claims['digest'] = sha256Base64(bodyString);
-      claims['digest-algorithm'] = 'SHA-256';
-    }
-
-    // Asking the server to encrypt the response: tell it which key to encrypt to.
-    if (mle.response) {
-      claims['v-c-response-mle-kid'] = this._ensureResponseKeys().responseMleKid;
-    }
-
-    // 3. Sign it.
-    const jwt = buildJwt(claims, { kid: this.requestKeys.signingSerial }, this.requestKeys.privateKeyPem);
-
-    // 4. Send it. For JWT auth the ONLY auth header is Authorization: Bearer <jwt>.
-    const url = `https://${this.runEnvironment}${path}`;
-    const headers = {
-      Authorization: `Bearer ${jwt}`,
-      'v-c-client-id': this.clientId,
-      'User-Agent': this.clientId,
-      Accept: 'application/json',
-    };
-    if (bodyString != null) headers['Content-Type'] = 'application/json';
-
-    const res = await fetch(url, { method, headers, body: bodyString });
-
-    // 5. Parse, and decrypt the response if it came back encrypted.
-    const text = await res.text();
-    let data = null;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = text; // non-JSON error pages, etc.
+      // Body-bearing methods carry a digest of the (possibly encrypted) payload.
+      if (BODY_METHODS.has(method) && bodyString != null) {
+        claims['digest'] = sha256Base64(bodyString);
+        claims['digest-algorithm'] = 'SHA-256';
       }
-    }
-    if (mle.response && data && typeof data === 'object' && data.encryptedResponse) {
-      data = await decryptResponse(data.encryptedResponse, this._ensureResponseKeys().responsePrivateKeyPem);
-    }
 
-    return {
-      status: res.status,
-      ok: res.ok,
-      headers: Object.fromEntries(res.headers),
-      data,
-      jwt,
-      request: { url, method, body: bodyString },
-    };
+      // Asking the server to encrypt the response: tell it which key to encrypt to.
+      if (mle.response) {
+        claims['v-c-response-mle-kid'] = this._ensureResponseKeys().responseMleKid;
+      }
+
+      // 3. Sign it. Decode our own token straight back into the trace so the header/claims
+      //    shown are literally what the signed token carries.
+      const jwt = buildJwt(claims, { kid: this.requestKeys.signingSerial }, this.requestKeys.privateKeyPem);
+      const decoded = decodeJwt(jwt);
+      trace.jwt = { compact: jwt, header: decoded.header, claims: decoded.payload };
+
+      // 4. Send it. For JWT auth the ONLY auth header is Authorization: Bearer <jwt>.
+      const url = trace.request.url;
+      const headers = {
+        Authorization: `Bearer ${jwt}`,
+        'v-c-client-id': this.clientId,
+        'User-Agent': this.clientId,
+        Accept: 'application/json',
+      };
+      if (bodyString != null) headers['Content-Type'] = 'application/json';
+      trace.request.headers = headers;
+
+      const res = await fetch(url, { method, headers, body: bodyString });
+
+      // 5. Parse, and decrypt the response if it came back encrypted.
+      const text = await res.text();
+      let data = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text; // non-JSON error pages, etc.
+        }
+      }
+
+      trace.response = {
+        status: res.status,
+        headers: Object.fromEntries(res.headers),
+        encrypted: null,
+        data: null,
+      };
+
+      if (mle.response && data && typeof data === 'object' && data.encryptedResponse) {
+        trace.response.encrypted = { encryptedResponse: data.encryptedResponse };
+        const decrypted = await decryptResponse(
+          data.encryptedResponse,
+          this._ensureResponseKeys().responsePrivateKeyPem
+        );
+        data = decrypted.data;
+        trace.encryption.response = decrypted.protectedHeader;
+      }
+      trace.response.data = data;
+
+      return { ok: res.ok, status: res.status, data, trace };
+    } catch (err) {
+      if (!err.trace) err.trace = trace;
+      throw err;
+    }
   }
 
   get(path, opts) {

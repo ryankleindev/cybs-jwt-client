@@ -24,7 +24,9 @@ const { CompactEncrypt, compactDecrypt } = require('jose');
  * @param {object} args
  * @param {object} args.cert      - the Cybersource request-MLE cert (node-forge cert)
  * @param {string} args.mleSerial - that cert's serial number (becomes the JWE `kid`)
- * @returns {Promise<{encryptedRequest: string}>}
+ * @returns {Promise<{encryptedRequest: string, protectedHeader: object}>}
+ *   `encryptedRequest` is the compact JWE; `protectedHeader` is the (cleartext) JWE header
+ *   we set — returned so callers can show it in a trace without re-decoding the envelope.
  */
 async function encryptRequest(jsonString, { cert, mleSerial }) {
   if (!cert) {
@@ -49,7 +51,7 @@ async function encryptRequest(jsonString, { cert, mleSerial }) {
     .setProtectedHeader(protectedHeader)
     .encrypt(publicKey);
 
-  return { encryptedRequest: token };
+  return { encryptedRequest: token, protectedHeader };
 }
 
 /**
@@ -57,12 +59,15 @@ async function encryptRequest(jsonString, { cert, mleSerial }) {
  *
  * @param {string} jwe - the compact JWE string from `data.encryptedResponse`
  * @param {string} responsePrivateKeyPem - YOUR response-MLE private key (PEM)
- * @returns {Promise<object>}
+ * @returns {Promise<{data: object, protectedHeader: object}>}
+ *   `data` is the parsed plaintext; `protectedHeader` is the JWE header the server set
+ *   (alg/enc/etc.) — surfaced so callers can show it in a trace.
  */
 async function decryptResponse(jwe, responsePrivateKeyPem) {
   const privateKey = crypto.createPrivateKey(responsePrivateKeyPem);
-  const { plaintext } = await compactDecrypt(jwe, privateKey);
-  return JSON.parse(new TextDecoder().decode(plaintext));
+  const { plaintext, protectedHeader } = await compactDecrypt(jwe, privateKey);
+  const data = JSON.parse(new TextDecoder().decode(plaintext));
+  return { data, protectedHeader };
 }
 
 module.exports = { encryptRequest, decryptResponse };

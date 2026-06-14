@@ -25,7 +25,7 @@ Requires Node 18+ (uses the global `fetch`).
 ## Quick start
 
 ```js
-const { CybsJwtClient, decodeJwt } = require('@ryankleindev/cybs-jwt-client');
+const { CybsJwtClient } = require('@ryankleindev/cybs-jwt-client');
 
 const client = new CybsJwtClient({
   runEnvironment: 'apitest.cybersource.com', // production: api.cybersource.com
@@ -39,9 +39,12 @@ const client = new CybsJwtClient({
 const res = await client.post('/pts/v2/payments', payload, {
   mle: { request: false, response: false },
 });
-console.log(res.status, res.data);
-console.log(decodeJwt(res.jwt).payload); // inspect the claims you signed
+console.log(res.status, res.data);   // the answer (decrypted, if response MLE)
+console.log(res.trace.jwt.claims);   // exactly what you signed — already decoded for you
 ```
+
+Every call returns `{ ok, status, data, trace }`. `data` is the result you usually want;
+`trace` is the glassbox — see [The trace](#the-trace-glassbox) below.
 
 Run the included example:
 
@@ -124,15 +127,68 @@ new CybsJwtClient({ /* ... */, defaultMle: { request: true, response: true } });
 The JWE library (`jose`) is the one piece not hand-rolled — same choice the official SDK
 makes; the teaching focus is the JWT flow.
 
+## The trace (glassbox)
+
+Every call returns a `trace` that captures *everything* that happened under the hood, so you
+(or a troubleshooting tool) can interrogate the exact values your code produced. It's always
+built and **lossless** — it includes plaintext PANs and the bearer JWT verbatim. This is a
+glassbox dev/troubleshooting tool, **not** a production client; don't log or expose a trace
+where that data would be a problem.
+
+```js
+res.trace = {
+  request: {
+    url, method,
+    headers,            // the headers actually sent (incl. `Authorization: Bearer <jwt>`)
+    mle,                // resolved { request, response } booleans for this call
+    body,               // your plaintext body object (null for GET/DELETE)
+    bodySerialized,     // plaintext body as the JSON string
+    bodyEncrypted,      // { encryptedRequest } envelope — only when request MLE is on
+    bodyWire,           // the EXACT bytes sent — this is what the JWT `digest` hashes
+  },
+  jwt: {
+    compact,            // the signed token string (header.payload.signature)
+    header,             // decoded { typ, alg, kid } — kid is your signing cert serial
+    claims,             // decoded claim set (iat, exp, request-*, digest, ...)
+  },
+  encryption: {
+    request,            // the JWE protected header we set (alg/enc/kid) — null when off
+    response,           // the JWE protected header the server set — null when off
+  },
+  response: {
+    status, headers,
+    encrypted,          // raw { encryptedResponse } — only when response MLE came back
+    data,               // final decrypted/parsed body (same as top-level `res.data`)
+  },
+};
+```
+
+If a crypto step throws (e.g. the response won't decrypt), the partial trace built so far is
+attached to the error as `err.trace` — exactly when you most want to see the JWT and the
+encrypted envelope:
+
+```js
+try {
+  await client.post(path, body, { mle: { response: true } });
+} catch (err) {
+  console.log(err.trace.jwt.claims);          // what you signed
+  console.log(err.trace.response.encrypted);  // the envelope that failed to decrypt
+}
+```
+
+`decodeJwt` is still exported if you need to decode a token you obtained elsewhere.
+
 ## Troubleshooting
 
-- **Decode what you signed.** `decodeJwt(res.jwt).payload` shows the exact claims. Every
-  call also returns `res.request` (url, method, body) and `res.jwt`.
+- **Inspect what you signed.** `res.trace.jwt.claims` (and `.header`) are already decoded —
+  no need to crack the token open yourself. The whole request/response lifecycle is in
+  `res.trace`.
 - **401 / authentication failed** — check `iss` matches the right id (portfolio for meta
   key), `kid` matches your cert serial, `request-host`/`request-resource-path` match the
   URL you hit, and your clock isn't off by >2 minutes (token `exp`).
-- **Digest mismatch** — the `digest` claim must hash the *exact* bytes sent. With request
-  MLE on, it hashes the encrypted envelope, not the plaintext.
+- **Digest mismatch** — the `digest` claim must hash the *exact* bytes sent
+  (`res.trace.request.bodyWire`). With request MLE on, that's the encrypted envelope, not
+  the plaintext.
 - **"alias not found"** — the error lists the CNs found in the p12. For meta key the
   signing cert CN should be your portfolio id; override with `requestP12.keyAlias` if needed.
 

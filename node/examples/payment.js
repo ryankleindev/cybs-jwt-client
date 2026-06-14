@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { CybsJwtClient, decodeJwt } = require('../src');
+const { CybsJwtClient } = require('../src');
 
 // --- tiny .env loader (no dependency) -------------------------------------------------
 function loadEnv() {
@@ -84,10 +84,9 @@ async function main() {
 
   const res = await client.post('/pts/v2/payments', payload, { mle });
 
-  // Show exactly what we signed — the core troubleshooting view.
-  const decoded = decodeJwt(res.jwt);
-  console.log('JWT header :', JSON.stringify(decoded.header));
-  console.log('JWT claims :', JSON.stringify(decoded.payload, null, 2));
+  // Show exactly what we signed — the core troubleshooting view, straight from the trace.
+  console.log('JWT header :', JSON.stringify(res.trace.jwt.header));
+  console.log('JWT claims :', JSON.stringify(res.trace.jwt.claims, null, 2));
 
   console.log(`\nHTTP ${res.status} ${res.ok ? 'OK' : 'ERROR'}`);
   console.log('Response   :', JSON.stringify(res.data, null, 2));

@@ -45,6 +45,12 @@ commands from inside `node/` (`.env` and `keys/` live there too).
 - **MLE API**: per-call, two explicit booleans `{ mle: { request, response } }`, both
   default false. `defaultMle` (same shape) sets a client-wide baseline; per-call overrides
   per key. No string shorthand — explicitness over conciseness (user preference).
+- **Glassbox return contract**: every call returns `{ ok, status, data, trace }`. `trace`
+  is always built and **lossless** (plaintext PANs, bearer JWT, JWE envelopes, decoded
+  JWT/JWE headers — nothing redacted) with sections `request` / `jwt` / `encryption` /
+  `response`. On a crypto throw the partial trace is attached as `err.trace`. This is a
+  deliberate dev/troubleshooting tool, not a production client; a separate project consumes
+  the trace to render it in troubleshooting UIs. No `trace.version` field yet (deferred).
 
 ## Conventions
 
@@ -65,8 +71,8 @@ node examples/instrument-identifier.js     # baseline JWT auth (no MLE)
 node examples/tokenize.js                   # request + response MLE round-trip (live decrypt)
 ```
 
-Expect HTTP 200. Each result includes `res.jwt` and `res.request`; use
-`decodeJwt(res.jwt).payload` to inspect the signed claims when troubleshooting.
+Expect HTTP 200. Every call returns `{ ok, status, data, trace }` (see the glassbox trace
+note below); inspect `res.trace.jwt.claims` for the signed claims when troubleshooting.
 
 ## Status
 

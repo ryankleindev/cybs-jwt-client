@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { CybsJwtClient, decodeJwt } = require('../src');
+const { CybsJwtClient } = require('../src');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '..', '.env');
@@ -102,9 +102,12 @@ async function main() {
 
   const res = await client.post(REQUEST_PATH, payload, { mle });
 
-  const decoded = decodeJwt(res.jwt);
-  console.log('JWT header :', JSON.stringify(decoded.header));
-  console.log('JWT claims :', JSON.stringify(decoded.payload, null, 2));
+  console.log('JWT header :', JSON.stringify(res.trace.jwt.header));
+  console.log('JWT claims :', JSON.stringify(res.trace.jwt.claims, null, 2));
+
+  // This endpoint exercises both MLE directions — show the JWE headers the trace captured.
+  console.log('Req JWE hdr:', JSON.stringify(res.trace.encryption.request));
+  console.log('Res JWE hdr:', JSON.stringify(res.trace.encryption.response));
 
   console.log(`\nHTTP ${res.status} ${res.ok ? 'OK' : 'ERROR'}`);
   console.log('Response   :', JSON.stringify(res.data, null, 2));
