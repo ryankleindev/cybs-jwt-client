@@ -1,8 +1,13 @@
 {
-  "name": "cybs-jwt-client",
+  "name": "@ryankleindev/cybs-jwt-client",
   "version": "0.1.0",
   "description": "A small, transparent toolkit for Cybersource REST API JWT authentication (standard key + meta key) with per-call Message-Level Encryption. Built to teach and troubleshoot the auth process.",
   "main": "src/index.js",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "example": "node examples/payment.js"
   },
@@ -17,6 +22,18 @@
   ],
   "author": "Ryan Klein",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryankleindev/cybs-jwt-client.git",
+    "directory": "node"
+  },
+  "bugs": {
+    "url": "https://github.com/ryankleindev/cybs-jwt-client/issues"
+  },
+  "homepage": "https://github.com/ryankleindev/cybs-jwt-client#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },

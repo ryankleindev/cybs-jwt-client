@@ -13,6 +13,10 @@ essentials with the JWT signing **hand-rolled and commented** so it can be read 
 
 ## Architecture
 
+The repo is a multi-language monorepo; the Node package lives under `node/` and publishes as
+`@ryankleindev/cybs-jwt-client`. All paths below are relative to `node/`. Run npm/node
+commands from inside `node/` (`.env` and `keys/` live there too).
+
 - `src/client.js` — `CybsJwtClient` class. Configured once with auth params; exposes
   `get/post/put/patch/delete` over a private `request()`. Native global `fetch` transport.
 - `src/jwt.js` — **hand-rolled** RS256 sign + `decodeJwt`, using Node's built-in `crypto`.
@@ -53,9 +57,10 @@ essentials with the JWT signing **hand-rolled and commented** so it can be read 
 
 ## Verifying changes
 
-Run an example end-to-end against the sandbox (keys + `.env` already in place):
+Run an example end-to-end against the sandbox (keys + `.env` already in place under `node/`):
 
 ```bash
+cd node
 node examples/instrument-identifier.js     # baseline JWT auth (no MLE)
 node examples/tokenize.js                   # request + response MLE round-trip (live decrypt)
 ```
@@ -65,5 +70,8 @@ Expect HTTP 200. Each result includes `res.jwt` and `res.request`; use
 
 ## Status
 
-Local git repo, not yet published to npm. JWT signing, standard/meta key, all HTTP methods,
-and per-call request/response MLE are implemented and verified live against the sandbox.
+Restructured into `node/` and prepared as a publishable scoped npm package
+(`@ryankleindev/cybs-jwt-client`, `files` allowlist, MIT LICENSE). Pushed to GitHub at
+`github.com/ryankleindev/cybs-jwt-client` (public). JWT signing, standard/meta key, all HTTP
+methods, and per-call request/response MLE are implemented and verified live against the
+sandbox. First `npm publish` is run manually by the maintainer.
