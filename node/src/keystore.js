@@ -136,14 +136,20 @@ function loadRequestP12(path, password, { keyAlias, mleCertAlias = 'CyberSource_
  * (cert serial whose CN matches your MID/portfolio) that goes in the `v-c-response-mle-kid`
  * claim. An explicit `kid` overrides auto-extraction.
  *
+ * Cybersource bundles its public request-MLE cert (CN=CyberSource_SJC_US) into *every* p12
+ * it issues — and its getting-started docs actually hand that cert out in the Response MLE
+ * Key download. So we also extract it here (`mleCert`/`mleSerial`), letting the client fall
+ * back to it for request encryption when the request p12 doesn't carry it.
+ *
  * @param {string} path
  * @param {string} password
  * @param {object} opts
- * @param {string} opts.kidAlias - CN to match for the kid (MID or portfolio id)
- * @param {string} [opts.kid]    - explicit kid override
- * @returns {{responsePrivateKeyPem: string, responseMleKid: string}}
+ * @param {string} opts.kidAlias       - CN to match for the kid (MID or portfolio id)
+ * @param {string} [opts.kid]          - explicit kid override
+ * @param {string} [opts.mleCertAlias] - CN of the Cybersource request-MLE cert
+ * @returns {{responsePrivateKeyPem: string, responseMleKid: string, mleCert: object|null, mleSerial: string|null}}
  */
-function loadResponseP12(path, password, { kidAlias, kid }) {
+function loadResponseP12(path, password, { kidAlias, kid, mleCertAlias = 'CyberSource_SJC_US' }) {
   const p12 = parseP12(path, password);
   const responsePrivateKeyPem = getPrivateKeyPem(p12);
 
@@ -159,7 +165,16 @@ function loadResponseP12(path, password, { kidAlias, kid }) {
     responseMleKid = certSerialNumber(bag.cert);
   }
 
-  return { responsePrivateKeyPem, responseMleKid };
+  // Cybersource's public request-MLE cert, if this p12 carries it (it usually does).
+  let mleCert = null;
+  let mleSerial = null;
+  const mleBag = findCertBag(p12, mleCertAlias);
+  if (mleBag) {
+    mleCert = mleBag.cert;
+    mleSerial = certSerialNumber(mleBag.cert);
+  }
+
+  return { responsePrivateKeyPem, responseMleKid, mleCert, mleSerial };
 }
 
 module.exports = {

@@ -40,6 +40,12 @@ commands from inside `node/` (`.env` and `keys/` live there too).
   - request p12 → (1) signing private key + (2) Cybersource request-MLE *public* cert
     (CN `CyberSource_SJC_US`).
   - response p12 → (3) your response-MLE *private* key (separate cert, separate serial).
+  - The `CyberSource_SJC_US` cert (2) is **Cybersource's single public cert, bundled into
+    every p12** it issues — it's in *both* the request and response downloads (identical
+    subject serial), and Cybersource's docs actually tell you to pull it from the *Response*
+    MLE Key download. `loadRequestP12` reads it from the request p12; `loadResponseP12` also
+    extracts it, and the client falls back to the response p12's copy for request encryption
+    when the request p12 lacks it (`_resolveRequestMleCert`).
 - **Encrypt-then-digest ordering**: with request MLE on, the `digest` claim hashes the
   encrypted `{encryptedRequest}` envelope — the exact bytes sent, not the plaintext.
 - **MLE API**: per-call, two explicit booleans `{ mle: { request, response } }`, both
