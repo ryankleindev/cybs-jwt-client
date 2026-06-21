@@ -48,6 +48,10 @@ commands from inside `node/` (`.env` and `keys/` live there too).
     when the request p12 lacks it (`_resolveRequestMleCert`).
 - **Encrypt-then-digest ordering**: with request MLE on, the `digest` claim hashes the
   encrypted `{encryptedRequest}` envelope — the exact bytes sent, not the plaintext.
+- **Clock skew**: JWTs live ~2 min (`exp = iat + 120`). The `clockSkewSeconds` config
+  (default 5) backdates `iat` (`iat = now - clockSkewSeconds`, `exp = iat + 120`) so a caller
+  clock running slightly ahead of Cybersource's doesn't mint a not-yet-valid token — the
+  usual cause of intermittent 401s. Validated as a non-negative finite number.
 - **MLE API**: per-call, two explicit booleans `{ mle: { request, response } }`, both
   default false. `defaultMle` (same shape) sets a client-wide baseline; per-call overrides
   per key. No string shorthand — explicitness over conciseness (user preference).
@@ -82,8 +86,13 @@ note below); inspect `res.trace.jwt.claims` for the signed claims when troublesh
 
 ## Status
 
-Restructured into `node/` and prepared as a publishable scoped npm package
-(`@ryankleindev/cybs-jwt-client`, `files` allowlist, MIT LICENSE). Pushed to GitHub at
-`github.com/ryankleindev/cybs-jwt-client` (public). JWT signing, standard/meta key, all HTTP
-methods, and per-call request/response MLE are implemented and verified live against the
-sandbox. First `npm publish` is run manually by the maintainer.
+**Published to npm** as `@ryankleindev/cybs-jwt-client` (public, scoped, MIT, `files`
+allowlist). Current version **0.1.1** (git tag `v0.1.1`). Source at
+`github.com/ryankleindev/cybs-jwt-client`. JWT signing, standard/meta key, all HTTP methods,
+per-call request/response MLE, `clockSkewSeconds` iat-backdating, and request-MLE cert
+fallback to the response p12 are all implemented and verified live against the sandbox.
+
+Release flow (publish 0.1.0 → 0.1.1 ran 2026-06-21): bump version **on a branch in the PR**
+(`main` is PR-only), squash-merge, then `npm version patch` is already applied — `npm publish`
+from inside `node/` is run **manually by the maintainer** (needs a live `npm login`; tokens
+expire). Tag the release `vX.Y.Z` after publish.
