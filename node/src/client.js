@@ -68,12 +68,16 @@ class CybsJwtClient {
       responseP12,
       defaultMle = { request: false, response: false },
       clientId = 'cybs-jwt-client',
+      clockSkewSeconds = 5,
     } = config;
 
     if (!runEnvironment) throw new Error('config.runEnvironment is required (e.g. "apitest.cybersource.com")');
     if (!merchantId) throw new Error('config.merchantId is required');
     if (useMetaKey && !portfolioId) throw new Error('config.portfolioId is required when useMetaKey is true');
     if (!requestP12 || !requestP12.path) throw new Error('config.requestP12.path is required');
+    if (typeof clockSkewSeconds !== 'number' || !Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
+      throw new Error('config.clockSkewSeconds must be a non-negative number');
+    }
 
     this.runEnvironment = runEnvironment;
     this.merchantId = merchantId;
@@ -83,6 +87,10 @@ class CybsJwtClient {
     // The configured default is off on both sides; per-call options override per key.
     this.defaultMle = normalizeMle(defaultMle, { request: false, response: false }, 'config.defaultMle');
     this.clientId = clientId;
+    // Backdate `iat` by this many seconds so a caller clock that runs slightly ahead of
+    // Cybersource's doesn't produce a "not yet valid" token. Tokens live ~2 min, so a few
+    // seconds is free insurance against the intermittent-401 clock-drift failure mode.
+    this.clockSkewSeconds = clockSkewSeconds;
 
     // For meta key, identity (issuer + cert alias) is the portfolio id; otherwise the MID.
     this.keyAlias = requestP12.keyAlias || (useMetaKey ? portfolioId : merchantId);
@@ -115,8 +123,37 @@ class CybsJwtClient {
     this._responseKeys = loadResponseP12(this.responseP12.path, this.responseP12.password, {
       kidAlias,
       kid: this.responseP12.kid,
+      mleCertAlias: this.responseP12.mleCertAlias,
     });
     return this._responseKeys;
+  }
+
+  /**
+   * Resolve the Cybersource public cert used to encrypt the request body.
+   *
+   * It normally lives in the request p12, but Cybersource bundles that same public cert
+   * (CN=CyberSource_SJC_US) into every p12 it issues — and its getting-started docs hand it
+   * out in the *Response* MLE Key download. So a correctly-configured user can have it only
+   * in the response p12; fall back to that before giving up.
+   *
+   * @returns {{cert: object, mleSerial: string}}
+   */
+  _resolveRequestMleCert() {
+    if (this.requestKeys.mleCert) {
+      return { cert: this.requestKeys.mleCert, mleSerial: this.requestKeys.mleSerial };
+    }
+    if (this.responseP12 && this.responseP12.path) {
+      const respKeys = this._ensureResponseKeys();
+      if (respKeys.mleCert) {
+        return { cert: respKeys.mleCert, mleSerial: respKeys.mleSerial };
+      }
+    }
+    throw new Error(
+      'Request MLE requested but the Cybersource MLE certificate (CN=CyberSource_SJC_US) was ' +
+        'not found in the request p12 or the response p12. Cybersource bundles this public cert ' +
+        'in the "REST – API Response MLE Key" download — add that p12 as config.responseP12 (or ' +
+        'set requestP12.mleCertAlias if your cert uses a different alias).'
+    );
   }
 
   /**
@@ -170,10 +207,7 @@ class CybsJwtClient {
 
         let outbound = body;
         if (mle.request) {
-          const { encryptedRequest, protectedHeader } = await encryptRequest(plaintext, {
-            cert: this.requestKeys.mleCert,
-            mleSerial: this.requestKeys.mleSerial,
-          });
+          const { encryptedRequest, protectedHeader } = await encryptRequest(plaintext, this._resolveRequestMleCert());
           outbound = { encryptedRequest };
           trace.request.bodyEncrypted = outbound;
           trace.encryption.request = protectedHeader;
@@ -184,9 +218,10 @@ class CybsJwtClient {
 
       // 2. Build the claim set.
       const nowSec = Math.floor(Date.now() / 1000);
+      const iat = nowSec - this.clockSkewSeconds; // backdate to absorb caller-vs-server clock drift
       const claims = {
-        iat: nowSec,
-        exp: nowSec + 120, // tokens are short-lived: 2 minutes
+        iat,
+        exp: iat + 120, // tokens are short-lived: 2 minutes
         'request-host': this.runEnvironment,
         'request-resource-path': path,
         'request-method': method.toLowerCase(),

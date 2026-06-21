@@ -78,6 +78,9 @@ The `kid` is the `serialNumber` attribute of your signing certificate's subject.
 The token is signed **RS256** with your private key. No separate `Digest`/`Date`/`Host`/
 `Signature` headers — those belong to the *HTTP Signature* scheme, not JWT.
 
+> Cybersource also supports a shared-secret (HMAC) signing scheme, which is a perfectly valid
+> way to authenticate — it's just out of scope here. This library is RS256/p12 (JWT) only.
+
 ## Standard key vs meta key
 
 - **Standard key**: you authenticate as a single merchant. `iss` and the signing cert's
@@ -115,8 +118,15 @@ new CybsJwtClient({ /* ... */, defaultMle: { request: true, response: true } });
 | Key | Lives in | Used for |
 |---|---|---|
 | Signing private key (CN = MID/portfolio) | **request** p12 | signing the JWT |
-| Cybersource public cert (CN = `CyberSource_SJC_US`) | **request** p12 | **encrypting** the request to Cybersource |
+| Cybersource public cert (CN = `CyberSource_SJC_US`) | **both** p12s | **encrypting** the request to Cybersource |
 | Your response private key (CN = MID/portfolio) | **response** p12 | **decrypting** the response |
+
+The `CyberSource_SJC_US` cert is Cybersource's single public MLE cert, and it's **bundled in
+every p12 Cybersource issues** — both the request and response downloads carry the same cert.
+In fact, Cybersource's getting-started docs tell you to extract it from the *Response* MLE Key
+download. The client reads the request p12 first and **falls back to the response p12** if the
+cert isn't there, so request MLE works regardless of which download you got it from. Override
+the alias with `requestP12.mleCertAlias` / `responseP12.mleCertAlias` if needed.
 
 - **Request MLE**: the JSON body is JWE-encrypted (RSA-OAEP-256 / A256GCM) to Cybersource's
   public cert and sent as `{ "encryptedRequest": "<jwe>" }`. The JWT `digest` is computed
@@ -186,6 +196,10 @@ try {
 - **401 / authentication failed** — check `iss` matches the right id (portfolio for meta
   key), `kid` matches your cert serial, `request-host`/`request-resource-path` match the
   URL you hit, and your clock isn't off by >2 minutes (token `exp`).
+- **Intermittent 401s** — tokens live only ~2 minutes (`exp = iat + 120`), so a caller clock
+  running slightly *ahead* of Cybersource's can mint a token the server sees as not-yet-valid.
+  The client already backdates `iat` by `clockSkewSeconds` (default 5) to absorb this; bump it
+  if a host's clock drifts further. Check `res.trace.jwt.claims.iat` to see the value sent.
 - **Digest mismatch** — the `digest` claim must hash the *exact* bytes sent
   (`res.trace.request.bodyWire`). With request MLE on, that's the encrypted envelope, not
   the plaintext.
@@ -211,5 +225,6 @@ new CybsJwtClient({
   },
   defaultMle,               // optional; { request: boolean, response: boolean }, both default false
   clientId,                 // optional; sent as v-c-client-id / User-Agent
+  clockSkewSeconds,         // optional; backdate iat to absorb clock drift (default 5)
 });
 ```

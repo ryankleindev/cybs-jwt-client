@@ -1,7 +1,7 @@
 {
   "name": "@ryankleindev/cybs-jwt-client",
   "version": "0.1.0",
-  "description": "A small, transparent toolkit for Cybersource REST API JWT authentication (standard key + meta key) with per-call Message-Level Encryption. Built to teach and troubleshoot the auth process.",
+  "description": "A small, transparent toolkit for Cybersource REST API JWT authentication (standard + meta key) with per-call Message-Level Encryption — built to be read and debugged, not to be another heavyweight SDK.",
   "main": "src/index.js",
   "files": [
     "src",
