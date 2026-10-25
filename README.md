@@ -2,7 +2,7 @@
 
 A small, **transparent** toolkit for Cybersource REST API JWT authentication (standard key
 and meta key) with per-call **Message-Level Encryption**. Built to *teach and troubleshoot*
-the auth flow — the JWT signing is hand-rolled and commented so every step is readable — not
+the auth flow — standard libraries, with every Cybersource-specific value explicit and commented — not
 to be another heavyweight SDK.
 
 > ⚠️ Built for learning, prototyping, and troubleshooting. Review it before relying on it in

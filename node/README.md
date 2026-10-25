@@ -4,8 +4,11 @@ A small, **transparent** toolkit for Cybersource REST API authentication. It exi
 make the JWT auth process (and the newer **Message-Level Encryption** requirements)
 easy to *understand and troubleshoot* — not to be another heavyweight SDK.
 
-You point it at your keys, and `get/post/put/patch/delete` just work. The JWT signing is
-hand-rolled with Node's built-in `crypto` so you can read exactly what gets signed.
+You point it at your keys, and `get/post/put/patch/delete` just work. It's built on the
+standard libraries (`jose` for the JWT and JWE, `node-forge` for p12 files), with every
+Cybersource-specific value set explicitly so you can read exactly what gets sent. Both of
+Cybersource's JWT signing methods are supported: a **certificate** (p12, RS256) or a
+**shared secret** (HMAC, HS256/384/512).
 
 > ⚠️ Built for learning, prototyping, and troubleshooting. Review it before relying on it
 > in production.
@@ -16,7 +19,7 @@ hand-rolled with Node's built-in `crypto` so you can read exactly what gets sign
 npm install @ryankleindev/cybs-jwt-client
 ```
 
-Requires Node 18+ (uses the global `fetch`).
+Requires Node 20.19+ (uses the global `fetch`, and loads the ESM-only `jose` 6).
 
 > Want to run the bundled `examples/`? Those live in the repo, not the published package —
 > clone [the repo](https://github.com/ryankleindev/cybs-jwt-client), `npm install` inside
@@ -43,6 +46,17 @@ console.log(res.status, res.data);   // the answer (decrypted, if response MLE)
 console.log(res.trace.jwt.claims);   // exactly what you signed — already decoded for you
 ```
 
+Signing with a shared secret instead? Swap `requestP12` for `sharedSecret`:
+
+```js
+const client = new CybsJwtClient({
+  runEnvironment: 'apitest.cybersource.com',
+  merchantId: 'my_mid',
+  sharedSecret: { keyId: 'my_key_id', secret: '<base64 secret from Business Center>' },
+  responseP12: { path: 'keys/response.p12', password: '••••' }, // for MLE (either direction)
+});
+```
+
 Every call returns `{ ok, status, data, trace }`. `data` is the result you usually want;
 `trace` is the glassbox — see [The trace](#the-trace-glassbox) below.
 
@@ -58,7 +72,8 @@ On a JWT request the **only** auth header is `Authorization: Bearer <jwt>`. Ever
 lives *inside* the signed token:
 
 **Header** — `{ "typ": "JWT", "alg": "RS256", "kid": "<cert serial number>" }`
-The `kid` is the `serialNumber` attribute of your signing certificate's subject.
+The `kid` is the `serialNumber` attribute of your signing certificate's subject. With a
+shared secret it's `{ "typ": "JWT", "alg": "HS256", "kid": "<shared secret key id>" }`.
 
 **Claims**
 
@@ -75,11 +90,25 @@ The `kid` is the `serialNumber` attribute of your signing certificate's subject.
 | `digest` / `digest-algorithm` | **POST/PUT/PATCH only** — base64(SHA-256(body)) / `"SHA-256"` |
 | `v-c-response-mle-kid` | **response MLE only** — serial of your response cert |
 
-The token is signed **RS256** with your private key. No separate `Digest`/`Date`/`Host`/
-`Signature` headers — those belong to the *HTTP Signature* scheme, not JWT.
+No separate `Digest`/`Date`/`Host`/`Signature` headers — those belong to the *HTTP
+Signature* scheme, not JWT.
 
-> Cybersource also supports a shared-secret (HMAC) signing scheme, which is a perfectly valid
-> way to authenticate — it's just out of scope here. This library is RS256/p12 (JWT) only.
+### Two ways to sign
+
+The claims are identical either way; only the signature step differs.
+
+| | Certificate | Shared secret |
+|---|---|---|
+| Config | `requestP12: { path, password }` | `sharedSecret: { keyId, secret, alg? }` |
+| `alg` | `RS256` | `HS256` (default), `HS384`, or `HS512` |
+| `kid` | your signing cert's serial number | the shared secret's key id |
+| Signature | RSA-SHA256 with your private key | HMAC with the secret's **base64-decoded** bytes |
+| Request MLE cert | request p12 (falls back to response p12) | response p12 |
+
+Create a shared secret in Business Center under **Payment Configuration > Key Management >
+Generate key > REST – Shared Secret**. The secret is shown base64-encoded; the client decodes
+it before computing the HMAC. Using the base64 *text* as the HMAC key is a common cause of a
+401 with a token that otherwise looks perfect.
 
 ## Standard key vs meta key
 
@@ -117,7 +146,7 @@ new CybsJwtClient({ /* ... */, defaultMle: { request: true, response: true } });
 
 | Key | Lives in | Used for |
 |---|---|---|
-| Signing private key (CN = MID/portfolio) | **request** p12 | signing the JWT |
+| Signing private key (CN = MID/portfolio) | **request** p12 (or a shared secret instead) | signing the JWT |
 | Cybersource public cert (CN = `CyberSource_SJC_US`) | **both** p12s | **encrypting** the request to Cybersource |
 | Your response private key (CN = MID/portfolio) | **response** p12 | **decrypting** the response |
 
@@ -128,14 +157,16 @@ download. The client reads the request p12 first and **falls back to the respons
 cert isn't there, so request MLE works regardless of which download you got it from. Override
 the alias with `requestP12.mleCertAlias` / `responseP12.mleCertAlias` if needed.
 
+With a **shared secret** there's no request p12, so the response p12 is the only key file:
+it supplies Cybersource's public cert for request MLE and your private key for response MLE.
+
 - **Request MLE**: the JSON body is JWE-encrypted (RSA-OAEP-256 / A256GCM) to Cybersource's
   public cert and sent as `{ "encryptedRequest": "<jwe>" }`. The JWT `digest` is computed
   over this encrypted envelope (the bytes actually sent).
 - **Response MLE**: the JWT carries `v-c-response-mle-kid`; Cybersource returns
   `{ "encryptedResponse": "<jwe>" }`, which the client decrypts with your response key.
 
-The JWE library (`jose`) is the one piece not hand-rolled — same choice the official SDK
-makes; the teaching focus is the JWT flow.
+Both the JWT and the JWE use `jose`; the values Cybersource cares about are set explicitly.
 
 ## The trace (glassbox)
 
@@ -158,8 +189,9 @@ res.trace = {
   },
   jwt: {
     compact,            // the signed token string (header.payload.signature)
-    header,             // decoded { typ, alg, kid } — kid is your signing cert serial
+    header,             // decoded { typ, alg, kid } — kid is your cert serial or shared secret key id
     claims,             // decoded claim set (iat, exp, request-*, digest, ...)
+    signing,            // { method: 'certificate' | 'sharedSecret', alg } — never the secret
   },
   encryption: {
     request,            // the JWE protected header we set (alg/enc/kid) — null when off
@@ -194,8 +226,9 @@ try {
   no need to crack the token open yourself. The whole request/response lifecycle is in
   `res.trace`.
 - **401 / authentication failed** — check `iss` matches the right id (portfolio for meta
-  key), `kid` matches your cert serial, `request-host`/`request-resource-path` match the
-  URL you hit, and your clock isn't off by >2 minutes (token `exp`).
+  key), `kid` matches your cert serial (or shared secret key id), `request-host`/
+  `request-resource-path` match the URL you hit, and your clock isn't off by >2 minutes
+  (token `exp`). With a shared secret, also confirm the secret was copied exactly.
 - **Intermittent 401s** — tokens live only ~2 minutes (`exp = iat + 120`), so a caller clock
   running slightly *ahead* of Cybersource's can mint a token the server sees as not-yet-valid.
   The client already backdates `iat` by `clockSkewSeconds` (default 5) to absorb this; bump it
@@ -214,12 +247,17 @@ new CybsJwtClient({
   merchantId,               // required
   useMetaKey,               // default false
   portfolioId,              // required when useMetaKey is true
-  requestP12: {
+  requestP12: {             // certificate signing; provide this OR sharedSecret
     path, password,
     keyAlias,               // optional; defaults to portfolioId or merchantId
     mleCertAlias,           // optional; defaults to 'CyberSource_SJC_US'
   },
-  responseP12: {            // optional; only needed for response MLE
+  sharedSecret: {           // shared-secret signing; provide this OR requestP12
+    keyId,                  // the key id from Business Center
+    secret,                 // the base64 secret from Business Center
+    alg,                    // optional; 'HS256' (default), 'HS384', or 'HS512'
+  },
+  responseP12: {            // response MLE; also request MLE when using sharedSecret
     path, password,
     kid,                    // optional explicit kid override
   },

@@ -7,6 +7,10 @@
  *
  * This endpoint supports BOTH request and response MLE, so it's the one that actually
  * exercises live response decryption. It runs with { request: true, response: true }.
+ *
+ * Signs with the request p12 by default. Set CYBS_SHARED_SECRET_KEY_ID and
+ * CYBS_SHARED_SECRET to sign with a shared secret instead (the response p12 is still used
+ * for MLE in both directions).
  */
 
 const fs = require('fs');
@@ -81,15 +85,28 @@ const payload = {
 };
 
 async function main() {
+  // One way to sign: a shared secret if one is configured, otherwise the request p12.
+  const signing = env.CYBS_SHARED_SECRET_KEY_ID
+    ? {
+        sharedSecret: {
+          keyId: env.CYBS_SHARED_SECRET_KEY_ID,
+          secret: env.CYBS_SHARED_SECRET,
+          alg: env.CYBS_SHARED_SECRET_ALG || undefined,
+        },
+      }
+    : {
+        requestP12: {
+          path: env.CYBS_REQUEST_P12_PATH || 'keys/rk_cp_sandbox_request.p12',
+          password: env.CYBS_REQUEST_P12_PASSWORD,
+        },
+      };
+
   const client = new CybsJwtClient({
     runEnvironment: env.CYBS_RUN_ENVIRONMENT || 'apitest.cybersource.com',
     merchantId: env.CYBS_MERCHANT_ID,
     useMetaKey: bool(env.CYBS_USE_META_KEY),
     portfolioId: env.CYBS_PORTFOLIO_ID,
-    requestP12: {
-      path: env.CYBS_REQUEST_P12_PATH || 'keys/rk_cp_sandbox_request.p12',
-      password: env.CYBS_REQUEST_P12_PASSWORD,
-    },
+    ...signing,
     responseP12: {
       path: env.CYBS_RESPONSE_P12_PATH || 'keys/rk_cp_sandbox_response.p12',
       password: env.CYBS_RESPONSE_P12_PASSWORD,
@@ -102,6 +119,7 @@ async function main() {
 
   const res = await client.post(REQUEST_PATH, payload, { mle });
 
+  console.log('Signed with:', JSON.stringify(res.trace.jwt.signing));
   console.log('JWT header :', JSON.stringify(res.trace.jwt.header));
   console.log('JWT claims :', JSON.stringify(res.trace.jwt.claims, null, 2));
 

@@ -9,7 +9,10 @@ as a production SDK. Standard key and meta key are both first-class.
 Cybersource's official `cybersource-rest-client-node` SDK works but buries the auth logic
 across many files. As Cybersource rolls out **MLE requirements** platform-wide, people
 struggle to understand and debug the JWT + encryption flow. This package strips it to the
-essentials with the JWT signing **hand-rolled and commented** so it can be read and fixed.
+essentials: the standard libraries everyone uses (`jose` for JWT/JWE, `node-forge` for p12),
+with every Cybersource-specific value set explicitly and commented so it can be read and fixed.
+The code mirrors the plain-Node walkthrough in the MLE/JWT article on ryanklein.dev; keep the
+core calls the same (same libraries, same header/claim values) when either one changes.
 
 ## Architecture
 
@@ -19,12 +22,11 @@ commands from inside `node/` (`.env` and `keys/` live there too).
 
 - `src/client.js` — `CybsJwtClient` class. Configured once with auth params; exposes
   `get/post/put/patch/delete` over a private `request()`. Native global `fetch` transport.
-- `src/jwt.js` — **hand-rolled** RS256 sign + `decodeJwt`, using Node's built-in `crypto`.
-  Intentionally no JWT library: every step is visible. This is the teaching core.
+- `src/jwt.js` — RS256 or HMAC (HS256/384/512) signing via `jose`'s `SignJWT`, plus
+  `decodeJwt` and the shared-secret base64 decode. The header and claims are set explicitly.
 - `src/keystore.js` — `node-forge` p12 loaders (`loadRequestP12`, `loadResponseP12`),
   alias/CN matching, cert serial extraction. Cached by file path.
-- `src/mle.js` — JWE encrypt/decrypt via `jose` (the ONE place a crypto lib is used; JWE
-  is too intricate to hand-roll and the SDK uses jose too).
+- `src/mle.js` — JWE encrypt/decrypt via `jose` (`CompactEncrypt` / `compactDecrypt`).
 - `src/digest.js` — SHA-256 base64 of the request body.
 - `examples/` — runnable, env-driven: `instrument-identifier.js`, `tokenize.js`, `payment.js`.
 
@@ -33,7 +35,14 @@ commands from inside `node/` (`.env` and `keys/` live there too).
 - **Wire format**: the only auth header is `Authorization: Bearer <jwt>`. Everything else
   (digest, host, path, method, issuer) lives *inside* the signed token. No separate
   Digest/Date/Host/Signature headers — those belong to HTTP-Signature auth, not JWT.
-- **JWT `kid`** = the `serialNumber` attribute of the signing cert's subject.
+- **Two signing methods, one claim set**: `requestP12` (certificate, RS256) OR `sharedSecret`
+  `{ keyId, secret, alg }` (HMAC, default HS256). Exactly one is required. The constructor
+  reduces either to `this.signer = { method, alg, kid, key }`; everything after signing is
+  shared. The secret is shown base64 in Business Center and is **base64-decoded** before use
+  as the HMAC key (`decodeSharedSecret`), per Cybersource's signing examples. The secret
+  never appears in the trace; `trace.jwt.signing` records `{ method, alg }` only.
+- **JWT `kid`** = the `serialNumber` attribute of the signing cert's subject (certificate),
+  or the shared secret's key id (shared secret).
 - **Standard vs meta key**: `useMetaKey` flag. Meta key → `iss` and signing-cert alias are
   the **portfolio id**; standard → the **MID**. `v-c-merchant-id` is always the MID.
 - **Two p12 files, three keys** (see memory `mle-uses-three-distinct-keys`):
@@ -46,6 +55,8 @@ commands from inside `node/` (`.env` and `keys/` live there too).
     MLE Key download. `loadRequestP12` reads it from the request p12; `loadResponseP12` also
     extracts it, and the client falls back to the response p12's copy for request encryption
     when the request p12 lacks it (`_resolveRequestMleCert`).
+  - With a shared secret there is no request p12, so the response p12 is the only key file
+    and supplies the SJC cert for request MLE.
 - **Encrypt-then-digest ordering**: with request MLE on, the `digest` claim hashes the
   encrypted `{encryptedRequest}` envelope — the exact bytes sent, not the plaintext.
 - **Clock skew**: JWTs live ~2 min (`exp = iat + 120`). The `clockSkewSeconds` config
@@ -64,7 +75,8 @@ commands from inside `node/` (`.env` and `keys/` live there too).
 
 ## Conventions
 
-- CommonJS, Node 18+ (relies on global `fetch`). Deps: `jose`, `node-forge` only.
+- CommonJS, Node 20.19+ (global `fetch`, and `require()` of the ESM-only `jose` 6). Deps:
+  `jose`, `node-forge` only.
 - **Never commit secrets.** `.env` and `keys/*.p12` are gitignored; verify nothing
   sensitive is staged before every commit (`git status --short | grep -iE 'p12|\.env$'`).
 - Prefer explicitness and clarity over cleverness throughout (user preference).
