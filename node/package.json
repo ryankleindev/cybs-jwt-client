@@ -1,6 +1,6 @@
 {
   "name": "@ryankleindev/cybs-jwt-client",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A small, transparent toolkit for Cybersource REST API JWT authentication (standard + meta key) with per-call Message-Level Encryption — built to be read and debugged, not to be another heavyweight SDK.",
   "main": "src/index.js",
   "files": [
@@ -35,10 +35,10 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0"
   },
   "dependencies": {
-    "jose": "^5.9.6",
+    "jose": "^6.2.13",
     "node-forge": "^1.3.1"
   }
 }

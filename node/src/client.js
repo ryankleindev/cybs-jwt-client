@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { loadRequestP12, loadResponseP12 } = require('./keystore');
-const { buildJwt, decodeJwt } = require('./jwt');
+const { buildJwt, decodeJwt, decodeSharedSecret, HMAC_ALGS } = require('./jwt');
 const { sha256Base64 } = require('./digest');
 const { encryptRequest, decryptResponse } = require('./mle');
 
@@ -56,6 +56,12 @@ function normalizeMle(spec, base, label) {
  *   const res = await client.post('/pts/v2/payments', payload, {
  *     mle: { request: true, response: true },
  *   });
+ *
+ * To sign with a shared secret instead of a certificate, pass `sharedSecret` in place of
+ * `requestP12`. MLE still needs the response p12: it carries both your response key and
+ * Cybersource's public cert for encrypting requests.
+ *
+ *   sharedSecret: { keyId: '...', secret: '<base64 secret from Business Center>' },
  */
 class CybsJwtClient {
   constructor(config = {}) {
@@ -65,6 +71,7 @@ class CybsJwtClient {
       useMetaKey = false,
       portfolioId,
       requestP12,
+      sharedSecret,
       responseP12,
       defaultMle = { request: false, response: false },
       clientId = 'cybs-jwt-client',
@@ -74,7 +81,20 @@ class CybsJwtClient {
     if (!runEnvironment) throw new Error('config.runEnvironment is required (e.g. "apitest.cybersource.com")');
     if (!merchantId) throw new Error('config.merchantId is required');
     if (useMetaKey && !portfolioId) throw new Error('config.portfolioId is required when useMetaKey is true');
-    if (!requestP12 || !requestP12.path) throw new Error('config.requestP12.path is required');
+    // Exactly one way to sign: a certificate (request p12) or a shared secret.
+    if (requestP12 && sharedSecret) {
+      throw new Error('Provide config.requestP12 OR config.sharedSecret, not both');
+    }
+    if (!sharedSecret && (!requestP12 || !requestP12.path)) {
+      throw new Error('config.requestP12.path (certificate signing) or config.sharedSecret is required');
+    }
+    if (sharedSecret) {
+      if (!sharedSecret.keyId) throw new Error('config.sharedSecret.keyId is required');
+      if (!sharedSecret.secret) throw new Error('config.sharedSecret.secret is required');
+      if (sharedSecret.alg && !HMAC_ALGS[sharedSecret.alg]) {
+        throw new Error('config.sharedSecret.alg must be HS256, HS384, or HS512');
+      }
+    }
     if (typeof clockSkewSeconds !== 'number' || !Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
       throw new Error('config.clockSkewSeconds must be a non-negative number');
     }
@@ -92,14 +112,30 @@ class CybsJwtClient {
     // seconds is free insurance against the intermittent-401 clock-drift failure mode.
     this.clockSkewSeconds = clockSkewSeconds;
 
-    // For meta key, identity (issuer + cert alias) is the portfolio id; otherwise the MID.
-    this.keyAlias = requestP12.keyAlias || (useMetaKey ? portfolioId : merchantId);
-
-    // Load the request p12 eagerly so config errors surface immediately.
-    this.requestKeys = loadRequestP12(requestP12.path, requestP12.password, {
-      keyAlias: this.keyAlias,
-      mleCertAlias: requestP12.mleCertAlias,
-    });
+    // Resolve the signer once, eagerly, so config errors surface immediately. Both paths
+    // reduce to the same three things buildJwt needs: alg, kid, and key.
+    if (sharedSecret) {
+      this.requestKeys = null; // no request p12 in shared-secret mode
+      this.signer = {
+        method: 'sharedSecret',
+        alg: sharedSecret.alg || 'HS256',
+        kid: sharedSecret.keyId, // the key id shown in Business Center, not a cert serial
+        key: decodeSharedSecret(sharedSecret.secret),
+      };
+    } else {
+      // For meta key, identity (issuer + cert alias) is the portfolio id; otherwise the MID.
+      this.keyAlias = requestP12.keyAlias || (useMetaKey ? portfolioId : merchantId);
+      this.requestKeys = loadRequestP12(requestP12.path, requestP12.password, {
+        keyAlias: this.keyAlias,
+        mleCertAlias: requestP12.mleCertAlias,
+      });
+      this.signer = {
+        method: 'certificate',
+        alg: 'RS256',
+        kid: this.requestKeys.signingSerial,
+        key: crypto.createPrivateKey(this.requestKeys.privateKeyPem),
+      };
+    }
 
     // Response p12 is loaded lazily — only when a call actually uses response MLE.
     this._responseKeys = null;
@@ -139,7 +175,7 @@ class CybsJwtClient {
    * @returns {{cert: object, mleSerial: string}}
    */
   _resolveRequestMleCert() {
-    if (this.requestKeys.mleCert) {
+    if (this.requestKeys && this.requestKeys.mleCert) {
       return { cert: this.requestKeys.mleCert, mleSerial: this.requestKeys.mleSerial };
     }
     if (this.responseP12 && this.responseP12.path) {
@@ -147,6 +183,14 @@ class CybsJwtClient {
       if (respKeys.mleCert) {
         return { cert: respKeys.mleCert, mleSerial: respKeys.mleSerial };
       }
+    }
+    if (!this.requestKeys) {
+      throw new Error(
+        'Request MLE requested, but in shared-secret mode the Cybersource MLE certificate ' +
+          '(CN=CyberSource_SJC_US) comes from the response p12. Add the "REST – API Response MLE ' +
+          'Key" download as config.responseP12 (or set responseP12.mleCertAlias if your cert uses ' +
+          'a different alias).'
+      );
     }
     throw new Error(
       'Request MLE requested but the Cybersource MLE certificate (CN=CyberSource_SJC_US) was ' +
@@ -242,11 +286,18 @@ class CybsJwtClient {
         claims['v-c-response-mle-kid'] = this._ensureResponseKeys().responseMleKid;
       }
 
-      // 3. Sign it. Decode our own token straight back into the trace so the header/claims
-      //    shown are literally what the signed token carries.
-      const jwt = buildJwt(claims, { kid: this.requestKeys.signingSerial }, this.requestKeys.privateKeyPem);
+      // 3. Sign it (RS256 with the p12 key, or HMAC with the shared secret). Decode our own
+      //    token straight back into the trace so the header/claims shown are literally what
+      //    the signed token carries. The secret itself never goes in the trace.
+      const { method: signingMethod, alg, kid, key } = this.signer;
+      const jwt = await buildJwt(claims, { kid, alg }, key);
       const decoded = decodeJwt(jwt);
-      trace.jwt = { compact: jwt, header: decoded.header, claims: decoded.payload };
+      trace.jwt = {
+        compact: jwt,
+        header: decoded.header,
+        claims: decoded.payload,
+        signing: { method: signingMethod, alg },
+      };
 
       // 4. Send it. For JWT auth the ONLY auth header is Authorization: Bearer <jwt>.
       const url = trace.request.url;

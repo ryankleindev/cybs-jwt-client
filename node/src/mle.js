@@ -7,10 +7,8 @@ const { CompactEncrypt, compactDecrypt } = require('jose');
 /**
  * Message-Level Encryption (MLE).
  *
- * Unlike the JWT signing (which we hand-roll to teach it), the JWE encryption here uses
- * the `jose` library — the same one the official SDK uses. JWE (RSA-OAEP-256 key wrap +
- * A256GCM content encryption) is genuinely intricate and not worth hand-rolling; the
- * teaching focus is the auth/JWT flow, not reimplementing AES-GCM.
+ * Uses `jose`, like the JWT signing in jwt.js: RSA-OAEP-256 key wrap + A256GCM content
+ * encryption, with the protected header values set explicitly below.
  *
  * Two directions, two *different* keys:
  *   - Request MLE:  encrypt the body TO Cybersource using their PUBLIC cert.

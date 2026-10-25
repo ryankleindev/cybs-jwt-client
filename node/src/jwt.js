@@ -1,67 +1,46 @@
 'use strict';
 
-const crypto = require('crypto');
+const { SignJWT, decodeJwt: decodePayload, decodeProtectedHeader } = require('jose');
 
 /**
- * Hand-rolled JWT (RS256) signing and decoding.
+ * JWT signing (RS256 or HMAC) and decoding, via `jose`.
  *
- * The whole point of this module is to be *readable*. A JWT is just three
- * base64url-encoded parts joined by dots:
+ * A JWT is three base64url-encoded parts joined by dots:
  *
  *     base64url(header) . base64url(payload) . base64url(signature)
  *
- * The signature is computed over the first two parts ("the signing input") using
- * the RSA private key. Cybersource verifies it with the public key tied to the
- * `kid` (key id) in the header — which is your certificate's serial number.
+ * The signature covers the first two parts. Cybersource supports two ways to produce it:
  *
- * No JWT library is used here on purpose: every step is visible so you can see
- * exactly what gets signed and debug it when an auth call fails.
+ *   - Certificate (RS256): sign with the RSA private key from your p12. Cybersource
+ *     verifies with the public key tied to the `kid` — your certificate's serial number.
+ *   - Shared secret (HS256/384/512): an HMAC keyed with the secret from Business Center.
+ *     Cybersource holds the same secret and recomputes the HMAC. The `kid` is the shared
+ *     secret's key id.
+ *
+ * Everything else about the token (header shape, claims, encoding) is identical. `jose`
+ * does the encoding and signing; the values that matter to Cybersource (`alg`, `kid`,
+ * and the claim set) are all set explicitly by the caller.
  */
 
-/**
- * base64url encoding (RFC 7515): standard base64, but `+`→`-`, `/`→`_`, no `=` padding.
- * @param {Buffer|string} input
- * @returns {string}
- */
-function base64url(input) {
-  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8');
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/**
- * Reverse of base64url, returning a Buffer.
- * @param {string} str
- * @returns {Buffer}
- */
-function base64urlDecode(str) {
-  const padded = str.replace(/-/g, '+').replace(/_/g, '/');
-  return Buffer.from(padded, 'base64');
-}
+/** HMAC algorithms Cybersource accepts for shared-secret JWTs. */
+const HMAC_ALGS = { HS256: true, HS384: true, HS512: true };
 
 /**
  * Build and sign a Cybersource JWT.
  *
  * @param {object} payload - the claim set (iat, exp, iss, request-*, digest, etc.)
  * @param {object} options
- * @param {string} options.kid - key id for the header (your cert serial number)
- * @param {string} privateKeyPem - RSA private key in PEM format
- * @returns {string} the compact JWT (header.payload.signature)
+ * @param {string} options.kid - key id for the header (cert serial number, or shared secret key id)
+ * @param {string} [options.alg='RS256'] - 'RS256', or 'HS256' / 'HS384' / 'HS512' for a shared secret
+ * @param {import('crypto').KeyObject|Uint8Array} key - RSA private key for RS256; the raw secret bytes for HMAC
+ * @returns {Promise<string>} the compact JWT (header.payload.signature)
  */
-function buildJwt(payload, { kid }, privateKeyPem) {
-  // 1. The header declares the algorithm and which key signed it.
-  const header = { typ: 'JWT', alg: 'RS256', kid };
-
-  // 2. base64url the header and payload, join with a dot. THIS is what gets signed.
-  const encodedHeader = base64url(JSON.stringify(header));
-  const encodedPayload = base64url(JSON.stringify(payload));
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-
-  // 3. Sign the signing input with RSA-SHA256 (RS256) using the private key.
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), privateKeyPem);
-  const encodedSignature = base64url(signature);
-
-  // 4. The JWT is the signing input plus the signature, dot-joined.
-  return `${signingInput}.${encodedSignature}`;
+function buildJwt(payload, { kid, alg = 'RS256' }, key) {
+  if (alg !== 'RS256' && !HMAC_ALGS[alg]) {
+    throw new Error(`Unsupported JWT alg "${alg}" (expected RS256, HS256, HS384, or HS512)`);
+  }
+  // The claims (including iat/exp) are set by the caller, so no jose claim helpers here.
+  return new SignJWT(payload).setProtectedHeader({ typ: 'JWT', alg, kid }).sign(key);
 }
 
 /**
@@ -72,12 +51,29 @@ function buildJwt(payload, { kid }, privateKeyPem) {
  * @returns {{header: object, payload: object, signature: string}}
  */
 function decodeJwt(token) {
-  const [encodedHeader, encodedPayload, encodedSignature] = token.split('.');
   return {
-    header: JSON.parse(base64urlDecode(encodedHeader).toString('utf8')),
-    payload: JSON.parse(base64urlDecode(encodedPayload).toString('utf8')),
-    signature: encodedSignature,
+    header: decodeProtectedHeader(token),
+    payload: decodePayload(token),
+    signature: token.split('.')[2],
   };
 }
 
-module.exports = { buildJwt, decodeJwt, base64url, base64urlDecode };
+/**
+ * Turn the shared secret shown in Business Center into the bytes used as the HMAC key.
+ *
+ * Cybersource displays the secret base64-encoded; its signing examples decode it
+ * (`base64 -d`) before computing the HMAC. Using the base64 *text* as the key instead is
+ * the classic shared-secret 401: the token looks perfect but the signature never matches.
+ *
+ * @param {string} secret - the base64 secret as shown in Business Center
+ * @returns {Buffer}
+ */
+function decodeSharedSecret(secret) {
+  const trimmed = String(secret).trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
+    throw new Error('sharedSecret.secret must be the base64 value shown in Business Center');
+  }
+  return Buffer.from(trimmed, 'base64');
+}
+
+module.exports = { buildJwt, decodeJwt, decodeSharedSecret, HMAC_ALGS };
