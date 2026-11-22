@@ -99,7 +99,9 @@ note below); inspect `res.trace.jwt.claims` for the signed claims when troublesh
 ## Status
 
 **Published to npm** as `@ryankleindev/cybs-jwt-client` (public, scoped, MIT, `files`
-allowlist). Current version **0.1.1** (git tag `v0.1.1`). Source at
+allowlist). Current version **0.2.1** (git tag `v0.2.1` once published). Requests send `Accept: */*`:
+`application/json` alone got an empty 406 from `/pts/v2/payments`, which answers in
+`application/hal+json`. Source at
 `github.com/ryankleindev/cybs-jwt-client`. JWT signing, standard/meta key, all HTTP methods,
 per-call request/response MLE, `clockSkewSeconds` iat-backdating, and request-MLE cert
 fallback to the response p12 are all implemented and verified live against the sandbox.

@@ -305,7 +305,9 @@ class CybsJwtClient {
         Authorization: `Bearer ${jwt}`,
         'v-c-client-id': this.clientId,
         'User-Agent': this.clientId,
-        Accept: 'application/json',
+        // Cybersource endpoints answer in different types (hal+json, json, a raw JWT) and some
+        // reject a narrower Accept with an empty 406 at the gateway, so accept anything.
+        Accept: '*/*',
       };
       if (bodyString != null) headers['Content-Type'] = 'application/json';
       trace.request.headers = headers;
